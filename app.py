@@ -22,7 +22,7 @@ import logging
 
 import kopf
 import kubernetes
-import yaml
+import json
 
 from kubernetes.client.rest import ApiException
 
@@ -33,28 +33,48 @@ __version__ = "0.1.0-dev"
 def _check_prerequisites():
     """Check if all the prerequisites are fulfilled."""
 
-    # TODO check if the required Secret is present
+    # TODO check if the required Secret 'sesheta-pubsub-consumer' is present
 
-    # TODO check if the required ImageStreamTag is present
+    # TODO check if the required ImageStreamTag 'sesheta' is present
 
     return True
+
+def _create_cron_job_data(name: str, namespace: str, env_vars={}) -> dict:
+    """Create a CronJob as a dict."""
+    body = kubernetes.client.V1beta1CronJob(api_version="batch/v1beta1", kind="CronJob")
+    body.metadata = kubernetes.client.V1ObjectMeta(namespace=namespace, generate_name=f"{name}-")
+    body.status = kubernetes.client.V1beta1CronJobStatus()
+
+    job_template = kubernetes.client.V1beta1JobTemplateSpec()
+    job_template.spec = kubernetes.client.V1JobSpec()
+    job_template.spec.template = kubernetes.client.V1PodTemplateSpec()
+
+    env_list = []
+    for env_name, env_value in env_vars.items():
+        env_list.append(kubernetes.client.V1EnvVar(name=env_name, value=env_value))
+        
+    container = kubernetes.client.V1Container(name="standup", image="sesheta:latest", env=env_list)
+
+    job_template.spec.template.spec = kubernetes.client.V1PodSpec(containers=[container], restart_policy="Never")
+
+    body.spec = kubernetes.client.V1beta1CronJobSpec(job_template=job_template, schedule="29 12 * * 1,3,5")
+
+    return body.to_dict()
 
 @kopf.on.create("thoth-station.ninja", "v1alpha1", "cyborgs")
 def create_cyborg(body, meta, spec, namespace, logger, **kwargs):
     """handle on_create events."""
-    sesheta_configmap = None
+    sesheta_config_map = None
+    sesheta_cron_job = None
 
     name = meta.get("name")
-    logger.debug(body)
-    logger.debug(meta)
-    logger.debug(spec)
     
     logger.info(f"on_create handler is called: {spec}")
 
     if not _check_prerequisites():
         raise kopf.HandlerRetryError("Cyborg's Secret or ConfigMap does not exist")
 
-    data = {
+    config_map_data = {
         "metadata": {
             "generateName": f"cyborg-{name}-",
         },
@@ -64,34 +84,60 @@ def create_cyborg(body, meta, spec, namespace, logger, **kwargs):
             "scrum-message": spec.get("scrum").get("message"),
             "scrum-url": spec.get("scrum").get("url"),
             "scrum-threadkey": spec.get("scrum").get("threadkey"),
-# FIXME                    "users-invited": spec.get("users").get("invited")
+    # FIXME                    "users-invited": spec.get("users").get("invited")
         }
     }
-
     # add ownerReferences for cascading delete
-    kopf.adopt(data, owner=body)
+    kopf.adopt(config_map_data, owner=body)
 
     try:
         api = kubernetes.client.CoreV1Api()
 
-        sesheta_configmap = api.create_namespaced_config_map(
+        sesheta_config_map = api.create_namespaced_config_map(
             namespace=namespace,
-            body=data
+            body=config_map_data
         )
-
-        logger.debug(sesheta_configmap)
     except ApiException as e:
         raise kopf.HandlerRetryError("Could not create required ConfigMap.", delay=60)
 
 
-    batch = kubernetes.client.BatchV1beta1Api()
+    try:
+        cron_job_data = _create_cron_job_data(f"cyborg-{name}", namespace)
 
-    if sesheta_configmap is not None:
-        return {'children': [sesheta_configmap.metadata.uid]}
+        # add ownerReferences for cascading delete
+        kopf.adopt(cron_job_data, owner=body)
+
+        logger.debug(cron_job_data)
+
+        batch = kubernetes.client.BatchV1beta1Api()
+
+        sesheta_cron_job = batch.create_namespaced_cron_job(
+            namespace=namespace,
+            body=cron_job_data
+        )
+
+        logger.debug(sesheta_cron_job)
+
+    except (ValueError, ApiException) as e:
+        # let's delete the ConfigMap we have created before
+        api = kubernetes.client.CoreV1Api()
+        api.delete_namespaced_config_map(sesheta_config_map.metadata.name, namespace)
+        logger.debug(f"deleted ConfigMap {sesheta_config_map.metadata.name}")
+
+        raise kopf.HandlerRetryError("Could not create required CronJob.", delay=60)
+
+
+    # TODO there is a better way for this?!
+    if sesheta_config_map is not None:
+        if sesheta_cron_job is not None:
+            return {
+                "children": [sesheta_config_map.metadata.uid, sesheta_cron_job.metadata.uid],
+                "configMapName": sesheta_config_map.metadata.name
+            }
 
     
 @kopf.on.update('thoth-station.ninja', 'v1alpha1', 'cyborgs')
-def update_cyborg(spec, status, namespace, logger, **kwargs):
+def update_cyborg(spec, old, new, diff, namespace, logger, **kwargs):
     api = kubernetes.client.CoreV1Api()
 
     logger.info(f"on_update handler called: {spec}")
