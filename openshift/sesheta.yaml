@@ -1,0 +1,23 @@
+apiVersion: thoth-station.ninja/v1alpha1
+kind: Cyborg
+metadata:
+  name: sesheta
+spec:
+  scrum:
+    message: "☎️ the scrum is due in one minute..."
+    space: "spaces/AAAAmQJAdY0"
+    threadkey: "ACFuF49qzeY"
+    url: "https://bluejeans.com/5618223545"
+  verbose: true
+  users:
+    invited:
+      - "Subin Modeel"
+      - "Kevin Postlethwait"
+      - "Harshad Reddy Nalla"
+      - "Christoph Goern"
+      - "Shruthi Raghuraman"
+      - "Frido Pokorny"
+      - "Francesco Murdaca"
+      - "Bissenbay Dauletbayev"
+      - "Devin de Hueck"
+      - "Marek Cermak"
