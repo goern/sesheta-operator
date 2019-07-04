@@ -1,0 +1,19 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: cyborg-operator
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      name: cyborg-operator
+  template:
+    metadata:
+      labels:
+        name: cyborg-operator
+    spec:
+      serviceAccountName: cyborg-operator
+      containers:
+        - name: cyborg-operator
+          image: sesheta-operator
+          imagePullPolicy: Always
