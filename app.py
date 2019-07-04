@@ -15,9 +15,10 @@
 # You should have received a copy of the GNU General Public License
 # along with this program. If not, see <http://www.gnu.org/licenses/>.
 
+
 """Sesheta Operator."""
 
-
+import os
 import logging
 
 import kopf
@@ -26,8 +27,18 @@ import json
 
 from kubernetes.client.rest import ApiException
 
+from thoth.common import init_logging
+
 
 __version__ = "0.1.0-dev"
+
+_DEBUG = os.getenv("CYBORG_DEBUG", True)
+
+
+init_logging()
+_LOGGER = logging.getLogger("thoth.cyborg.sesheta_operator")
+logging.getLogger().setLevel(logging.DEBUG if _DEBUG else logging.INFO)
+
 
 
 def _check_prerequisites():
@@ -41,13 +52,9 @@ def _check_prerequisites():
 
 def _create_cron_job_data(name: str, namespace: str, env_vars={}) -> dict:
     """Create a CronJob as a dict."""
-    body = kubernetes.client.V1beta1CronJob(api_version="batch/v1beta1", kind="CronJob")
-    body.metadata = kubernetes.client.V1ObjectMeta(namespace=namespace, generate_name=f"{name}-")
-    body.status = kubernetes.client.V1beta1CronJobStatus()
-
-    job_template = kubernetes.client.V1beta1JobTemplateSpec()
-    job_template.spec = kubernetes.client.V1JobSpec()
-    job_template.spec.template = kubernetes.client.V1PodTemplateSpec()
+    cron_job = kubernetes.client.V1beta1CronJob(api_version="batch/v1beta1", kind="CronJob")
+    cron_job.metadata = kubernetes.client.V1ObjectMeta(namespace=namespace, generate_name=f"{name}-")
+    cron_job.status = kubernetes.client.V1beta1CronJobStatus()
 
     env_list = []
     for env_name, env_value in env_vars.items():
@@ -55,21 +62,29 @@ def _create_cron_job_data(name: str, namespace: str, env_vars={}) -> dict:
         
     container = kubernetes.client.V1Container(name="standup", image="sesheta:latest", env=env_list)
 
-    job_template.spec.template.spec = kubernetes.client.V1PodSpec(containers=[container], restart_policy="Never")
+    pod_spec = kubernetes.client.V1PodSpec(containers=[container], restart_policy="Never")
 
-    body.spec = kubernetes.client.V1beta1CronJobSpec(job_template=job_template, schedule="29 12 * * 1,3,5")
+    pod_template = kubernetes.client.V1PodTemplateSpec()
+    pod_template.spec = pod_spec
 
-    return body.to_dict()
+    job = kubernetes.client.V1JobSpec(template=pod_template)
+
+    job_template = kubernetes.client.V1beta1JobTemplateSpec()
+    job_template.spec = job
+
+    cron_job.spec = kubernetes.client.V1beta1CronJobSpec(job_template=job_template, schedule="29 12 * * 1,3,5")
+
+    return cron_job.to_dict()
 
 @kopf.on.create("thoth-station.ninja", "v1alpha1", "cyborgs")
-def create_cyborg(body, meta, spec, namespace, logger, **kwargs):
+def create_cyborg(body, meta, spec, namespace, **kwargs):
     """handle on_create events."""
     sesheta_config_map = None
     sesheta_cron_job = None
 
     name = meta.get("name")
     
-    logger.info(f"on_create handler is called: {spec}")
+    _LOGGER.debug(f"on_create handler is called: {spec}")
 
     if not _check_prerequisites():
         raise kopf.HandlerRetryError("Cyborg's Secret or ConfigMap does not exist")
@@ -107,22 +122,22 @@ def create_cyborg(body, meta, spec, namespace, logger, **kwargs):
         # add ownerReferences for cascading delete
         kopf.adopt(cron_job_data, owner=body)
 
-        logger.debug(cron_job_data)
-
         batch = kubernetes.client.BatchV1beta1Api()
 
         sesheta_cron_job = batch.create_namespaced_cron_job(
             namespace=namespace,
-            body=cron_job_data
+            body=cron_job_data,
+            pretty=True,
         )
 
-        logger.debug(sesheta_cron_job)
+        _LOGGER.debug(sesheta_cron_job)
 
     except (ValueError, ApiException) as e:
         # let's delete the ConfigMap we have created before
         api = kubernetes.client.CoreV1Api()
         api.delete_namespaced_config_map(sesheta_config_map.metadata.name, namespace)
-        logger.debug(f"deleted ConfigMap {sesheta_config_map.metadata.name}")
+        _LOGGER.debug(f"deleted ConfigMap {sesheta_config_map.metadata.name}")
+        _LOGGER.debug(f"The CronJob I would like to create: {cron_job_data}")
 
         raise kopf.HandlerRetryError("Could not create required CronJob.", delay=60)
 
@@ -137,13 +152,13 @@ def create_cyborg(body, meta, spec, namespace, logger, **kwargs):
 
     
 @kopf.on.update('thoth-station.ninja', 'v1alpha1', 'cyborgs')
-def update_cyborg(spec, old, new, diff, namespace, logger, **kwargs):
+def update_cyborg(spec, old, new, diff, namespace, **kwargs):
     api = kubernetes.client.CoreV1Api()
 
-    logger.info(f"on_update handler called: {spec}")
+    _LOGGER.info(f"on_update handler called: {spec}")
 
 @kopf.on.delete('thoth-station.ninja', 'v1alpha1', 'cyborgs')
-def delete_cyborg(spec, status, namespace, logger, **kwargs):
+def delete_cyborg(spec, status, namespace, **kwargs):
     api = kubernetes.client.CoreV1Api()
 
-    logger.info(f"on_delete handler called: {spec}")
+    _LOGGER.info(f"on_delete handler called: {spec}")
