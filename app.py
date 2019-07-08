@@ -26,6 +26,7 @@ import kubernetes
 import json
 
 from kubernetes.client.rest import ApiException
+from kopf import config as kopf_config
 
 from thoth.common import init_logging
 
@@ -50,19 +51,23 @@ def _check_prerequisites():
 
     return True
 
-def _create_cron_job_data(name: str, namespace: str, env_vars={}) -> dict:
+def _create_cron_job_data(name: str, namespace: str, env_vars={}) -> kubernetes.client.V1beta1CronJob:
     """Create a CronJob as a dict."""
     cron_job = kubernetes.client.V1beta1CronJob(api_version="batch/v1beta1", kind="CronJob")
     cron_job.metadata = kubernetes.client.V1ObjectMeta(namespace=namespace, generate_name=f"{name}-")
     cron_job.status = kubernetes.client.V1beta1CronJobStatus()
+    cron_job.failed_jobs_history_limit = 4
 
     env_list = []
     for env_name, env_value in env_vars.items():
         env_list.append(kubernetes.client.V1EnvVar(name=env_name, value=env_value))
         
-    container = kubernetes.client.V1Container(name="standup", image="sesheta:latest", env=env_list)
+    containers = []
+    containers.append(kubernetes.client.V1Container(name="standup", image="sesheta:latest", env=env_list))
 
-    pod_spec = kubernetes.client.V1PodSpec(containers=[container], restart_policy="Never")
+    # TODO add resources!
+
+    pod_spec = kubernetes.client.V1PodSpec(containers=containers, restart_policy="Never")
 
     pod_template = kubernetes.client.V1PodTemplateSpec()
     pod_template.spec = pod_spec
@@ -74,7 +79,7 @@ def _create_cron_job_data(name: str, namespace: str, env_vars={}) -> dict:
 
     cron_job.spec = kubernetes.client.V1beta1CronJobSpec(job_template=job_template, schedule="29 12 * * 1,3,5")
 
-    return cron_job.to_dict()
+    return cron_job
 
 @kopf.on.create("thoth-station.ninja", "v1alpha1", "cyborgs")
 def create_cyborg(body, meta, spec, namespace, **kwargs):
@@ -118,6 +123,7 @@ def create_cyborg(body, meta, spec, namespace, **kwargs):
 
     try:
         cron_job_data = _create_cron_job_data(f"cyborg-{name}", namespace)
+        _LOGGER.debug(cron_job_data)
 
         # add ownerReferences for cascading delete
         kopf.adopt(cron_job_data, owner=body)
