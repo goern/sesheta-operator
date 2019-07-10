@@ -18,6 +18,7 @@
 
 """Sesheta Operator."""
 
+
 import os
 import logging
 
@@ -41,7 +42,6 @@ _LOGGER = logging.getLogger("thoth.cyborg.sesheta_operator")
 logging.getLogger().setLevel(logging.DEBUG if _DEBUG else logging.INFO)
 
 
-
 def _check_prerequisites():
     """Check if all the prerequisites are fulfilled."""
 
@@ -50,6 +50,7 @@ def _check_prerequisites():
     # TODO check if the required ImageStreamTag 'sesheta' is present
 
     return True
+
 
 def _create_cron_job_data(name: str, namespace: str, env_vars={}) -> kubernetes.client.V1beta1CronJob:
     """Create a CronJob as a dict."""
@@ -61,7 +62,7 @@ def _create_cron_job_data(name: str, namespace: str, env_vars={}) -> kubernetes.
     env_list = []
     for env_name, env_value in env_vars.items():
         env_list.append(kubernetes.client.V1EnvVar(name=env_name, value=env_value))
-        
+
     containers = []
     containers.append(kubernetes.client.V1Container(name="standup", image="sesheta:latest", env=env_list))
 
@@ -81,6 +82,7 @@ def _create_cron_job_data(name: str, namespace: str, env_vars={}) -> kubernetes.
 
     return cron_job
 
+
 @kopf.on.create("thoth-station.ninja", "v1alpha1", "cyborgs")
 def create_cyborg(body, meta, spec, namespace, **kwargs):
     """handle on_create events."""
@@ -88,24 +90,22 @@ def create_cyborg(body, meta, spec, namespace, **kwargs):
     sesheta_cron_job = None
 
     name = meta.get("name")
-    
+
     _LOGGER.debug(f"on_create handler is called: {spec}")
 
     if not _check_prerequisites():
         raise kopf.HandlerRetryError("Cyborg's Secret or ConfigMap does not exist")
 
     config_map_data = {
-        "metadata": {
-            "generateName": f"cyborg-{name}-",
-        },
+        "metadata": {"generateName": f"cyborg-{name}-"},
         "data": {
             "sesheta-verbose": str(bool(spec.get("verbose"))),
             "scrum-space": spec.get("scrum").get("space"),
             "scrum-message": spec.get("scrum").get("message"),
             "scrum-url": spec.get("scrum").get("url"),
             "scrum-threadkey": spec.get("scrum").get("threadkey"),
-    # FIXME                    "users-invited": spec.get("users").get("invited")
-        }
+            # FIXME                    "users-invited": spec.get("users").get("invited")
+        },
     }
     # add ownerReferences for cascading delete
     kopf.adopt(config_map_data, owner=body)
@@ -113,13 +113,9 @@ def create_cyborg(body, meta, spec, namespace, **kwargs):
     try:
         api = kubernetes.client.CoreV1Api()
 
-        sesheta_config_map = api.create_namespaced_config_map(
-            namespace=namespace,
-            body=config_map_data
-        )
+        sesheta_config_map = api.create_namespaced_config_map(namespace=namespace, body=config_map_data)
     except ApiException as e:
         raise kopf.HandlerRetryError("Could not create required ConfigMap.", delay=60)
-
 
     try:
         cron_job_data = _create_cron_job_data(f"cyborg-{name}", namespace)
@@ -130,11 +126,7 @@ def create_cyborg(body, meta, spec, namespace, **kwargs):
 
         batch = kubernetes.client.BatchV1beta1Api()
 
-        sesheta_cron_job = batch.create_namespaced_cron_job(
-            namespace=namespace,
-            body=cron_job_data,
-            pretty=True,
-        )
+        sesheta_cron_job = batch.create_namespaced_cron_job(namespace=namespace, body=cron_job_data, pretty=True)
 
         _LOGGER.debug(sesheta_cron_job)
 
@@ -147,23 +139,23 @@ def create_cyborg(body, meta, spec, namespace, **kwargs):
 
         raise kopf.HandlerRetryError("Could not create required CronJob.", delay=60)
 
-
     # TODO there is a better way for this?!
     if sesheta_config_map is not None:
         if sesheta_cron_job is not None:
             return {
                 "children": [sesheta_config_map.metadata.uid, sesheta_cron_job.metadata.uid],
-                "configMapName": sesheta_config_map.metadata.name
+                "configMapName": sesheta_config_map.metadata.name,
             }
 
-    
-@kopf.on.update('thoth-station.ninja', 'v1alpha1', 'cyborgs')
+
+@kopf.on.update("thoth-station.ninja", "v1alpha1", "cyborgs")
 def update_cyborg(spec, old, new, diff, namespace, **kwargs):
     api = kubernetes.client.CoreV1Api()
 
     _LOGGER.info(f"on_update handler called: {spec}")
 
-@kopf.on.delete('thoth-station.ninja', 'v1alpha1', 'cyborgs')
+
+@kopf.on.delete("thoth-station.ninja", "v1alpha1", "cyborgs")
 def delete_cyborg(spec, status, namespace, **kwargs):
     api = kubernetes.client.CoreV1Api()
 
